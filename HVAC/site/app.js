@@ -90,6 +90,19 @@ function formatRatio(value) {
   return num === null ? "--" : `${num.toFixed(2)}x`;
 }
 
+function formatPressureTick(value) {
+  const num = asNumber(value);
+  if (num === null) {
+    return value;
+  }
+  return num >= 1 ? num.toFixed(2) : num.toFixed(3);
+}
+
+function formatCurrentTick(value) {
+  const num = asNumber(value);
+  return num === null ? value : num.toFixed(2);
+}
+
 function formatTimestamp(value) {
   if (!value) {
     return "--";
@@ -172,13 +185,45 @@ function chartMin(values, fallback) {
   return values.length ? Math.min(...values) : fallback;
 }
 
-function computePressureVisibleMax(points, limits) {
+function roundPressureMax(value) {
+  const num = Math.max(0, Number(value) || 0);
+  if (num <= 0.25) {
+    return Math.ceil(num / 0.025) * 0.025;
+  }
+  if (num <= 1) {
+    return Math.ceil(num / 0.1) * 0.1;
+  }
+  if (num <= 3) {
+    return Math.ceil(num / 0.25) * 0.25;
+  }
+  return Math.ceil(num / 0.5) * 0.5;
+}
+
+function computePressureDomain(points, limits, mode = "pulse") {
   const values = metricValues(points, "pressure_inh2o");
   const pressure = limits?.pressure_inh2o || {};
+  const baseline = asNumber(pressure.baseline_high) ?? 0.05;
   const flush = asNumber(pressure.flush_expected_high) ?? 0.35;
   const watch = asNumber(pressure.watch_high) ?? 1.5;
+  const elevated = asNumber(pressure.elevated_high) ?? 3.0;
   const observed = chartMax(values, 0);
-  return Math.max(flush * 2.5, watch * 1.12, observed * 1.18, 0.8);
+
+  let rawMax;
+  if (mode === "overview") {
+    rawMax = Math.max(observed * 1.18, watch * 1.1, flush * 1.5, 1.0);
+  } else if (mode === "alarm") {
+    rawMax = Math.max(observed * 1.15, elevated * 1.08, watch * 1.12, 1.0);
+  } else {
+    rawMax = Math.max(observed * 1.22, flush * 1.2, baseline * 5, 0.25);
+    if (observed >= watch * 0.8) {
+      rawMax = Math.max(rawMax, watch * 1.04);
+    }
+  }
+
+  return {
+    min: 0,
+    max: Math.max(roundPressureMax(rawMax), 0.25),
+  };
 }
 
 function computeCurrentDomain(points, limits) {
@@ -225,7 +270,7 @@ function buildCurrentBands(limits, visibleMax) {
   ];
 }
 
-function buildPressureLimitLineDatasets(labels, limits) {
+function buildPressureLimitLineDatasets(labels, limits, visibleMax) {
   const pressure = limits?.pressure_inh2o || {};
   const lineDefs = [
     { label: "Normal flush high", value: pressure.flush_expected_high, color: "#68d7d2", dash: [6, 6] },
@@ -237,6 +282,9 @@ function buildPressureLimitLineDatasets(labels, limits) {
     .map((line) => {
       const value = asNumber(line.value);
       if (value === null) {
+        return null;
+      }
+      if (asNumber(visibleMax) !== null && value > visibleMax * 1.001) {
         return null;
       }
       return {
@@ -321,7 +369,10 @@ function buildTimeChart(labels, datasets, yTitle, min, max, maxTicks, bands = []
           grid: { color: "rgba(255,255,255,0.06)" },
         },
         y: {
-          ticks: { color: "#95afb4" },
+          ticks: {
+            color: "#95afb4",
+            callback: formatPressureTick,
+          },
           grid: { color: "rgba(255,255,255,0.06)" },
           title: {
             display: true,
@@ -336,9 +387,10 @@ function buildTimeChart(labels, datasets, yTitle, min, max, maxTicks, bands = []
   };
 }
 
-function renderPressureWindowChart(id, points, limits, maxTicks) {
+function renderPressureWindowChart(id, points, limits, maxTicks, mode = "pulse", badgeId = null) {
   const labels = points.map((point) => formatTimestamp(point.timestamp));
-  const visibleMax = computePressureVisibleMax(points, limits);
+  const domain = computePressureDomain(points, limits, mode);
+  const visibleMax = domain.max;
   const datasets = [
     {
       label: "Pressure",
@@ -350,12 +402,16 @@ function renderPressureWindowChart(id, points, limits, maxTicks) {
       fill: true,
       borderWidth: 2.2,
     },
-    ...buildPressureLimitLineDatasets(labels, limits),
+    ...buildPressureLimitLineDatasets(labels, limits, visibleMax),
   ];
+
+  if (badgeId) {
+    setText(badgeId, `0-${formatPressure(visibleMax)}`);
+  }
 
   createChart(
     id,
-    buildTimeChart(labels, datasets, "Pressure (inH2O)", 0, visibleMax, maxTicks, buildPressureBands(limits, visibleMax))
+    buildTimeChart(labels, datasets, "Pressure (inH2O)", domain.min, visibleMax, maxTicks, buildPressureBands(limits, visibleMax))
   );
 }
 
@@ -399,7 +455,10 @@ function renderCurrentChart(payload) {
           grid: { color: "rgba(255,255,255,0.06)" },
         },
         y: {
-          ticks: { color: "#95afb4" },
+          ticks: {
+            color: "#95afb4",
+            callback: formatCurrentTick,
+          },
           grid: { color: "rgba(255,255,255,0.06)" },
           title: {
             display: true,
@@ -412,6 +471,8 @@ function renderCurrentChart(payload) {
       },
     },
   });
+
+  setText("currentScale", `${domain.min.toFixed(2)}-${domain.max.toFixed(2)} mA`);
 }
 
 function renderDailyPeakChart(payload) {
@@ -458,7 +519,10 @@ function renderDailyPeakChart(payload) {
           grid: { display: false },
         },
         y: {
-          ticks: { color: "#95afb4" },
+          ticks: {
+            color: "#95afb4",
+            callback: formatPressureTick,
+          },
           grid: { color: "rgba(255,255,255,0.06)" },
           title: {
             display: true,
@@ -477,10 +541,13 @@ function renderFlushPeakChart(payload) {
   const labels = flushes.map((flush) => formatTimestamp(flush.peak_timestamp));
   const values = flushes.map((flush) => asNumber(flush.peak_pressure_inh2o));
   const limits = payload?.limits || {};
-  const visibleMax = Math.max(
-    computePressureVisibleMax(flushes.map((flush) => ({ pressure_inh2o: flush.peak_pressure_inh2o })), limits),
-    chartMax(values.filter((value) => value !== null), 0) * 1.15
+  const domain = computePressureDomain(
+    flushes.map((flush) => ({ pressure_inh2o: flush.peak_pressure_inh2o })),
+    limits,
+    "pulse"
   );
+  const visibleMax = Math.max(domain.max, roundPressureMax(chartMax(values.filter((value) => value !== null), 0) * 1.15));
+  setText("flushPeakScale", `0-${formatPressure(visibleMax)}`);
 
   createChart("flushPeakChart", {
     type: "bar",
@@ -495,7 +562,7 @@ function renderFlushPeakChart(payload) {
           borderWidth: 1.2,
           borderRadius: 8,
         },
-        ...buildPressureLimitLineDatasets(labels, limits),
+        ...buildPressureLimitLineDatasets(labels, limits, visibleMax),
       ],
     },
     options: {
@@ -515,7 +582,10 @@ function renderFlushPeakChart(payload) {
           grid: { display: false },
         },
         y: {
-          ticks: { color: "#95afb4" },
+          ticks: {
+            color: "#95afb4",
+            callback: formatPressureTick,
+          },
           grid: { color: "rgba(255,255,255,0.06)" },
           title: {
             display: true,
@@ -574,7 +644,13 @@ function renderFlushTimingChart(payload) {
           grid: { display: false },
         },
         y: {
-          ticks: { color: "#95afb4" },
+          ticks: {
+            color: "#95afb4",
+            callback(value) {
+              const num = asNumber(value);
+              return num === null ? value : num.toFixed(0);
+            },
+          },
           grid: { color: "rgba(255,255,255,0.06)" },
           title: {
             display: true,
@@ -778,7 +854,6 @@ function renderSummary(payload, sync) {
   setText("alarmState", pressureStateLabel(alarmState.pressure_level));
   setText("alarmStateSub", alarmState.message || "No pressure state available");
   setText("sensorStatus", latest.status || "--");
-  setText("sensorStatusSub", `Sensor ${titleCase(alarmState.sensor_level || "unknown")}`);
   setText("sampleCount", String(stats24h.sample_count ?? "--"));
   setText("sampleCountSub", `${stats24h.coverage_hours ?? 0}h of history`);
 
@@ -835,10 +910,10 @@ async function main() {
     renderLimits(payload);
     renderWindowStats(payload);
     renderFlushEvents(payload);
-    renderPressureWindowChart("recentChart", payload?.history?.pressure_15m || [], payload?.limits || {}, 10);
-    renderPressureWindowChart("hourChart", payload?.history?.pressure_1h || [], payload?.limits || {}, 8);
-    renderPressureWindowChart("sixHourChart", payload?.history?.pressure_6h || [], payload?.limits || {}, 8);
-    renderPressureWindowChart("pressureChart", payload?.history?.pressure_24h || [], payload?.limits || {}, 8);
+    renderPressureWindowChart("recentChart", payload?.history?.pressure_15m || [], payload?.limits || {}, 10, "pulse", "recentScale");
+    renderPressureWindowChart("hourChart", payload?.history?.pressure_1h || [], payload?.limits || {}, 8, "pulse", "hourScale");
+    renderPressureWindowChart("sixHourChart", payload?.history?.pressure_6h || [], payload?.limits || {}, 8, "overview", "sixHourScale");
+    renderPressureWindowChart("pressureChart", payload?.history?.pressure_24h || [], payload?.limits || {}, 8, "overview", "pressureScale");
     renderCurrentChart(payload);
     renderDailyPeakChart(payload);
     renderFlushPeakChart(payload);
