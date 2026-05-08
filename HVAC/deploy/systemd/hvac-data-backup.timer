@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HVAC sewer data backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:10:00
+Persistent=true
+AccuracySec=5min
+Unit=hvac-data-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -160,13 +160,14 @@ h2 {
 
 .risk-ring {
   --score: 0;
+  --risk-color: var(--orange);
   width: 126px;
   aspect-ratio: 1;
   border-radius: 50%;
   display: grid;
   place-items: center;
   background:
-    conic-gradient(var(--orange) calc(var(--score) * 1%), rgba(255, 255, 255, 0.1) 0),
+    conic-gradient(var(--risk-color) calc(var(--score) * 1%), rgba(255, 255, 255, 0.1) 0),
     #111417;
   padding: 10px;
   transition: background 0.3s ease;
@@ -355,20 +356,28 @@ h2 {
 .status-low,
 .status-normal,
 .status-normal_flush,
-.status-ok {
+.status-ok,
+.status-good,
+.status-usable,
+.status-stable,
+.status-falling {
   color: var(--green);
 }
 
 .status-watch,
 .status-elevated,
 .status-baseline_shift,
-.status-warning {
+.status-warning,
+.status-limited,
+.status-insufficient,
+.status-rising {
   color: var(--amber);
 }
 
 .status-high,
 .status-critical,
-.status-error {
+.status-error,
+.status-poor {
   color: var(--red);
 }
 

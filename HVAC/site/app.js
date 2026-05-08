@@ -1,7 +1,9 @@
 const dashboardUrl = "data/dashboard.json";
 const syncUrl = "data/sync.json";
+const backupUrl = "data/backup.json";
 
 const charts = {};
+let loadInFlight = false;
 
 const fmt = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -90,6 +92,49 @@ function formatRatio(value) {
   return num === null ? "--" : `${num.toFixed(2)}x`;
 }
 
+function formatPercent(value) {
+  const num = asNumber(value);
+  if (num === null) {
+    return "--";
+  }
+  const sign = num > 0 ? "+" : "";
+  return `${sign}${num.toFixed(1)}%`;
+}
+
+function formatAbsolutePercent(value) {
+  const num = asNumber(value);
+  return num === null ? "--" : `${num.toFixed(1)}%`;
+}
+
+function formatBytes(value) {
+  const num = asNumber(value);
+  if (num === null) {
+    return "--";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = num;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatAgeSeconds(value) {
+  const num = asNumber(value);
+  if (num === null) {
+    return "--";
+  }
+  if (num < 60) {
+    return `${Math.round(num)} sec`;
+  }
+  if (num < 3600) {
+    return `${Math.round(num / 60)} min`;
+  }
+  return `${(num / 3600).toFixed(1)} hr`;
+}
+
 function formatPressureTick(value) {
   const num = asNumber(value);
   if (num === null) {
@@ -112,6 +157,29 @@ function formatTimestamp(value) {
     return String(value);
   }
   return fmt.format(date);
+}
+
+function secondsSince(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return Math.max(0, (Date.now() - date.getTime()) / 1000);
+}
+
+function riskColor(level) {
+  const colors = {
+    low: "#87d37c",
+    watch: "#e2b84c",
+    elevated: "#d98b45",
+    high: "#ff8a5b",
+    critical: "#ff4d57",
+    unknown: "#a5aeb7",
+  };
+  return colors[String(level || "").toLowerCase()] || "#d98b45";
 }
 
 function formatDateLabel(value) {
@@ -165,6 +233,14 @@ function setStatusClass(el, value, prefix) {
     "normal_flush",
     "baseline_shift",
     "unknown",
+    "good",
+    "usable",
+    "limited",
+    "poor",
+    "rising",
+    "falling",
+    "stable",
+    "insufficient",
   ];
   el.classList.remove(...values.map((item) => `${prefix}-${item}`));
   if (!value) {
@@ -207,6 +283,9 @@ function computePressureDomain(points, limits, mode = "pulse") {
   const watch = asNumber(pressure.watch_high) ?? 1.5;
   const elevated = asNumber(pressure.elevated_high) ?? 3.0;
   const observed = chartMax(values, 0);
+  const nextThreshold = [baseline, flush, watch, elevated]
+    .filter((value) => value > observed * 1.001)
+    .sort((a, b) => a - b)[0];
 
   let rawMax;
   if (mode === "overview") {
@@ -218,6 +297,10 @@ function computePressureDomain(points, limits, mode = "pulse") {
     if (observed >= watch * 0.8) {
       rawMax = Math.max(rawMax, watch * 1.04);
     }
+  }
+
+  if (mode === "pulse" && nextThreshold && nextThreshold <= Math.max(rawMax * 2.0, observed + 0.75)) {
+    rawMax = Math.max(rawMax, nextThreshold * 1.04);
   }
 
   return {
@@ -754,6 +837,101 @@ function renderWindowStats(payload) {
   }
 }
 
+function renderQuality(payload) {
+  const root = byId("qualityList");
+  if (!root) {
+    return;
+  }
+  const quality = payload?.data_quality || {};
+  const trend = payload?.flush_analysis?.trend || {};
+  const level = quality.level || "unknown";
+  const trendLevel = trend.level || "insufficient";
+
+  setText("qualityState", titleCase(level));
+  setStatusClass(byId("qualityState"), level, "status");
+
+  root.innerHTML = "";
+  const items = [
+    {
+      title: quality.message || "No data quality status yet.",
+      body: `Sample age ${formatAgeSeconds(quality.sample_age_seconds)} | 15m density ${formatAbsolutePercent((quality.sample_density_15m ?? 0) * 100)}`,
+    },
+    {
+      title: `Flush trend: ${titleCase(trendLevel)}`,
+      body: trend.message || "Needs more flush events for a trend.",
+      status: trendLevel,
+    },
+    {
+      title: "Trend deltas",
+      body: `Peak ${formatPercent(trend.peak_delta_percent)} | Recovery ${formatPercent(trend.recovery_delta_percent)} | Pulse ${formatPercent(trend.duration_delta_percent)}`,
+    },
+  ];
+
+  for (const item of items) {
+    const div = document.createElement("div");
+    div.className = "stack-item";
+    div.innerHTML = `<strong>${item.title}</strong><p>${item.body}</p>`;
+    if (item.status) {
+      setStatusClass(div, item.status, "status");
+    }
+    root.appendChild(div);
+  }
+
+  const issues = quality.issues || [];
+  if (issues.length) {
+    const div = document.createElement("div");
+    div.className = "stack-item";
+    div.innerHTML = `<strong>Notes</strong><p>${issues.slice(0, 3).join(" ")}</p>`;
+    root.appendChild(div);
+  }
+}
+
+function renderBackup(backup = {}) {
+  const root = byId("backupList");
+  if (!root) {
+    return;
+  }
+  const status = backup.status || "unknown";
+  const local = backup.local || {};
+  const remote = backup.remote || {};
+  const backupAge = secondsSince(backup.generated_at);
+  const stale = backupAge !== null && backupAge > 36 * 3600;
+
+  setText("backupState", stale ? "Stale" : titleCase(status));
+  setStatusClass(byId("backupState"), status === "ok" && !stale ? "good" : "poor", "status");
+
+  root.innerHTML = "";
+  if (status !== "ok" || stale) {
+    root.innerHTML = `<div class="stack-item"><strong>Backup problem</strong><p>${backup.error || "Backup status is unavailable."}</p></div>`;
+    if (stale) {
+      root.innerHTML = `<div class="stack-item"><strong>Backup stale</strong><p>Last successful backup is ${formatAgeSeconds(backupAge)} old.</p></div>`;
+    }
+    return;
+  }
+
+  const items = [
+    {
+      title: `Last backup ${formatTimestamp(backup.generated_at)}`,
+      body: `Retention ${backup.retention_days ?? "--"} days | Root ${backup.backup_root || "--"}`,
+    },
+    {
+      title: "Copied data",
+      body: `Raw logs ${formatBytes(local.raw_bytes)} | SQLite snapshot ${formatBytes(local.sqlite_latest_bytes)} | Total ${formatBytes(local.total_bytes)}`,
+    },
+    {
+      title: "Source history",
+      body: `${remote.readings ?? 0} readings | ${formatTimestamp(remote.first_timestamp)} to ${formatTimestamp(remote.last_timestamp)}`,
+    },
+  ];
+
+  for (const item of items) {
+    const div = document.createElement("div");
+    div.className = "stack-item";
+    div.innerHTML = `<strong>${item.title}</strong><p>${item.body}</p>`;
+    root.appendChild(div);
+  }
+}
+
 function renderFlushEvents(payload) {
   const root = byId("flushEventsList");
   if (!root) {
@@ -800,6 +978,7 @@ function renderSummary(payload, sync) {
   const flushAnalysis = payload?.flush_analysis || {};
   const lastEvent = flushAnalysis?.last_event || null;
   const alarmState = payload?.alarm_state || {};
+  const dataQuality = payload?.data_quality || {};
   const riskScore = asNumber(prediction.risk_score);
   const riskLevel = prediction.risk_level || flushAnalysis.clog_signal_level || "unknown";
   const lastSample = latest.timestamp ? `Last sample ${formatTimestamp(latest.timestamp)}` : "No samples yet";
@@ -822,7 +1001,7 @@ function renderSummary(payload, sync) {
   setText("confidenceLine", `Confidence: ${prediction.confidence || flushAnalysis.confidence || "low"}`);
 
   setText("currentPressure", formatPressure(latest.pressure_positive_inh2o ?? latest.pressure_inh2o));
-  setText("currentPressureSub", `Loop ${formatCurrent(latest.current_ma)}`);
+  setText("currentPressureSub", `${pressureStateLabel(alarmState.pressure_level)} | Loop ${formatCurrent(latest.current_ma)}`);
   setText("peak15Pressure", formatPressure(stats15.max_pressure_inh2o ?? recentPeak.pressure_inh2o));
   setText(
     "peak15PressureSub",
@@ -869,10 +1048,28 @@ function renderSummary(payload, sync) {
   const ring = byId("riskRing");
   if (ring) {
     ring.style.setProperty("--score", String(riskScore ?? 0));
+    ring.style.setProperty("--risk-color", riskColor(riskLevel));
   }
 
   setStatusClass(byId("riskLevel"), riskLevel, "status");
   setStatusClass(byId("alarmState"), alarmState.pressure_level || "unknown", "status");
+  setStatusClass(
+    byId("lastSample"),
+    asNumber(dataQuality.sample_age_seconds) === null
+      ? "unknown"
+      : dataQuality.sample_age_seconds <= (dataQuality.fresh_sample_seconds ?? 30)
+        ? "good"
+        : dataQuality.sample_age_seconds <= (dataQuality.stale_sample_seconds ?? 120)
+          ? "warning"
+          : "error",
+    "status"
+  );
+  const syncAge = secondsSince(sync?.last_success_at);
+  setStatusClass(
+    byId("lastSync"),
+    syncAge === null ? "unknown" : syncAge <= 45 ? "good" : syncAge <= 180 ? "warning" : "error",
+    "status"
+  );
 
   const sensorEl = byId("sensorStatus");
   sensorEl?.classList.remove("status-ok", "status-warning", "status-error");
@@ -887,9 +1084,10 @@ function renderSummary(payload, sync) {
 
 async function loadData() {
   const cacheBust = `ts=${Date.now()}`;
-  const [dashboardRes, syncRes] = await Promise.all([
+  const [dashboardRes, syncRes, backupRes] = await Promise.all([
     fetch(`${dashboardUrl}?${cacheBust}`),
     fetch(`${syncUrl}?${cacheBust}`),
+    fetch(`${backupUrl}?${cacheBust}`),
   ]);
 
   if (!dashboardRes.ok) {
@@ -898,17 +1096,24 @@ async function loadData() {
 
   const payload = await dashboardRes.json();
   const sync = syncRes.ok ? await syncRes.json() : {};
-  return { payload, sync };
+  const backup = backupRes.ok ? await backupRes.json() : {};
+  return { payload, sync, backup };
 }
 
 async function main() {
+  if (loadInFlight) {
+    return;
+  }
+  loadInFlight = true;
   try {
-    const { payload, sync } = await loadData();
+    const { payload, sync, backup } = await loadData();
     renderSummary(payload, sync);
     renderDrivers(payload?.prediction?.drivers || payload?.flush_analysis?.drivers || []);
     renderEvents(payload);
     renderLimits(payload);
     renderWindowStats(payload);
+    renderQuality(payload);
+    renderBackup(backup);
     renderFlushEvents(payload);
     renderPressureWindowChart("recentChart", payload?.history?.pressure_15m || [], payload?.limits || {}, 10, "pulse", "recentScale");
     renderPressureWindowChart("hourChart", payload?.history?.pressure_1h || [], payload?.limits || {}, 8, "pulse", "hourScale");
@@ -923,13 +1128,15 @@ async function main() {
     setText("riskNote", "Dashboard data could not be loaded.");
     setText("lastSync", "Sync error");
     const message = error instanceof Error ? error.message : String(error);
-    const roots = ["driversList", "eventsList", "limitsList", "windowStatsList", "flushEventsList"];
+    const roots = ["driversList", "eventsList", "limitsList", "windowStatsList", "qualityList", "backupList", "flushEventsList"];
     for (const id of roots) {
       const root = byId(id);
       if (root) {
         root.innerHTML = `<div class="stack-item"><strong>Load error</strong><p>${message}</p></div>`;
       }
     }
+  } finally {
+    loadInFlight = false;
   }
 }
 

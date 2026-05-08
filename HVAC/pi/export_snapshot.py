@@ -505,14 +505,16 @@ def build_flush_summary(
             "recent": [],
             "top_24h": [],
             "last_event": None,
+            "comparison": {},
+            "trend": build_flush_trend(events_24h),
             "typical_peak_pressure_inh2o": None,
             "typical_duration_seconds": None,
             "typical_recovery_seconds": None,
             "peak_ratio_vs_typical": None,
             "recovery_ratio_vs_typical": None,
             "duration_ratio_vs_typical": None,
-            "clog_signal_score": 0,
-            "clog_signal_level": "low",
+            "clog_signal_score": None,
+            "clog_signal_level": "unknown",
             "confidence": "low",
             "drivers": [],
             "notes": ["No flush pulse was detected in the last 24 hours. Flush a toilet to build a comparison pulse."],
@@ -589,11 +591,37 @@ def build_flush_summary(
         {"label": "Recovery vs typical", "value": round(recovery_ratio, 2), "unit": "x"},
     ]
 
+    comparison = {
+        "peak": {
+            "latest": round(float(last_event["peak_pressure_inh2o"]), 3),
+            "typical": round(typical_peak, 3),
+            "ratio": round(peak_ratio, 2),
+            "percent_delta": round((peak_ratio - 1.0) * 100.0, 1),
+            "unit": "inH2O",
+        },
+        "duration": {
+            "latest": round(float(last_event["duration_seconds"]), 1),
+            "typical": round(typical_duration, 1),
+            "ratio": round(duration_ratio, 2),
+            "percent_delta": round((duration_ratio - 1.0) * 100.0, 1),
+            "unit": "s",
+        },
+        "recovery": {
+            "latest": round(float(last_event["recovery_seconds"]), 1),
+            "typical": round(typical_recovery, 1),
+            "ratio": round(recovery_ratio, 2),
+            "percent_delta": round((recovery_ratio - 1.0) * 100.0, 1),
+            "unit": "s",
+        },
+    }
+
     return {
         "count_24h": count,
         "recent": recent[:8],
         "top_24h": top[:8],
         "last_event": last_event,
+        "comparison": comparison,
+        "trend": build_flush_trend(events_24h),
         "typical_peak_pressure_inh2o": round(typical_peak, 3),
         "typical_duration_seconds": round(typical_duration, 1),
         "typical_recovery_seconds": round(typical_recovery, 1),
@@ -605,6 +633,159 @@ def build_flush_summary(
         "confidence": confidence,
         "drivers": drivers,
         "notes": notes,
+    }
+
+
+def percent_delta(newer: float | None, older: float | None) -> float | None:
+    if newer is None or older is None or abs(older) < 0.001:
+        return None
+    return ((newer - older) / older) * 100.0
+
+
+def build_flush_trend(events_24h: list[dict[str, Any]]) -> dict[str, Any]:
+    chronological = sorted(events_24h, key=lambda item: item["peak_timestamp"])
+    count = len(chronological)
+    if count < 4:
+        return {
+            "level": "insufficient",
+            "message": "Needs at least four flush pulses for a directional trend.",
+            "event_count": count,
+            "peak_delta_percent": None,
+            "recovery_delta_percent": None,
+            "duration_delta_percent": None,
+        }
+
+    half = max(2, count // 2)
+    older = chronological[:half]
+    newer = chronological[-half:]
+
+    older_peak = statistics.median(float(item["peak_pressure_inh2o"]) for item in older)
+    newer_peak = statistics.median(float(item["peak_pressure_inh2o"]) for item in newer)
+    older_recovery = statistics.median(float(item["recovery_seconds"]) for item in older)
+    newer_recovery = statistics.median(float(item["recovery_seconds"]) for item in newer)
+    older_duration = statistics.median(float(item["duration_seconds"]) for item in older)
+    newer_duration = statistics.median(float(item["duration_seconds"]) for item in newer)
+
+    peak_delta = percent_delta(newer_peak, older_peak)
+    recovery_delta = percent_delta(newer_recovery, older_recovery)
+    duration_delta = percent_delta(newer_duration, older_duration)
+
+    rising_signals = sum(
+        1
+        for value, threshold in [
+            (peak_delta, 15.0),
+            (recovery_delta, 25.0),
+            (duration_delta, 25.0),
+        ]
+        if value is not None and value >= threshold
+    )
+    falling_signals = sum(
+        1
+        for value, threshold in [
+            (peak_delta, -15.0),
+            (recovery_delta, -25.0),
+            (duration_delta, -25.0),
+        ]
+        if value is not None and value <= threshold
+    )
+
+    if rising_signals >= 2 or (peak_delta is not None and recovery_delta is not None and peak_delta >= 15 and recovery_delta >= 15):
+        level = "rising"
+        message = "Recent flushes are building more pressure or releasing slower than earlier flushes."
+    elif falling_signals >= 2:
+        level = "falling"
+        message = "Recent flushes are easier than earlier flushes."
+    else:
+        level = "stable"
+        message = "Recent flush pressure and recovery are close to earlier flushes."
+
+    return {
+        "level": level,
+        "message": message,
+        "event_count": count,
+        "older_event_count": len(older),
+        "newer_event_count": len(newer),
+        "older_median_peak_pressure_inh2o": round(older_peak, 3),
+        "newer_median_peak_pressure_inh2o": round(newer_peak, 3),
+        "older_median_recovery_seconds": round(older_recovery, 1),
+        "newer_median_recovery_seconds": round(newer_recovery, 1),
+        "older_median_duration_seconds": round(older_duration, 1),
+        "newer_median_duration_seconds": round(newer_duration, 1),
+        "peak_delta_percent": round(peak_delta, 1) if peak_delta is not None else None,
+        "recovery_delta_percent": round(recovery_delta, 1) if recovery_delta is not None else None,
+        "duration_delta_percent": round(duration_delta, 1) if duration_delta is not None else None,
+    }
+
+
+def build_data_quality(
+    latest: dict[str, Any] | None,
+    stats_15m: dict[str, Any],
+    stats_24h: dict[str, Any],
+    flush_analysis: dict[str, Any],
+    sample_hz: float,
+    now: datetime,
+) -> dict[str, Any]:
+    latest_dt = parse_iso(latest.get("timestamp")) if latest else None
+    sample_age_seconds = (now - latest_dt).total_seconds() if latest_dt else None
+    expected_15m = max(sample_hz, 0.001) * 15.0 * 60.0
+    density_15m = float(stats_15m.get("sample_count") or 0) / expected_15m
+    density_15m = clamp(density_15m, 0.0, 1.0)
+    coverage_hours = float(stats_24h.get("coverage_hours") or 0.0)
+    fault_count = int(stats_24h.get("fault_count") or 0)
+    flush_count = int(flush_analysis.get("count_24h") or 0)
+
+    issues: list[str] = []
+    if sample_age_seconds is None:
+        issues.append("No latest sample timestamp.")
+    elif sample_age_seconds > 120:
+        issues.append("Latest sample is stale.")
+    if density_15m < 0.75:
+        issues.append("Recent sample density is low.")
+    if fault_count:
+        issues.append(f"{fault_count} sensor fault samples in the 24h window.")
+    if flush_count < 3:
+        issues.append("Flush comparison confidence is limited.")
+
+    fresh_seconds = max(15.0, 5.0 / max(sample_hz, 0.001))
+    stale_seconds = max(60.0, fresh_seconds * 4.0)
+
+    if sample_age_seconds is not None and sample_age_seconds <= fresh_seconds and density_15m >= 0.9 and fault_count == 0:
+        sensor_level = "good"
+    elif sample_age_seconds is not None and sample_age_seconds <= stale_seconds and density_15m >= 0.75:
+        sensor_level = "watch"
+    else:
+        sensor_level = "poor"
+
+    if flush_count >= 5 and coverage_hours >= 6:
+        analysis_level = "good"
+    elif flush_count >= 2 and coverage_hours >= 2:
+        analysis_level = "usable"
+    else:
+        analysis_level = "limited"
+
+    if sensor_level == "good" and analysis_level in {"good", "usable"}:
+        level = "good"
+        message = "Monitor data is current and usable for flush comparison."
+    elif sensor_level == "poor":
+        level = "poor"
+        message = "Monitor data quality is low; check sampling before trusting the score."
+    else:
+        level = "limited"
+        message = "Monitor data is usable, but more flush history will improve confidence."
+
+    return {
+        "level": level,
+        "sensor_level": sensor_level,
+        "analysis_level": analysis_level,
+        "message": message,
+        "sample_age_seconds": round(sample_age_seconds, 1) if sample_age_seconds is not None else None,
+        "fresh_sample_seconds": round(fresh_seconds, 1),
+        "stale_sample_seconds": round(stale_seconds, 1),
+        "sample_density_15m": round(density_15m, 3),
+        "coverage_hours_24h": round(coverage_hours, 2),
+        "flush_count_24h": flush_count,
+        "fault_count_24h": fault_count,
+        "issues": issues,
     }
 
 
@@ -645,7 +826,7 @@ def build_payload() -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "generated_at": iso_utc(utc_now()),
-        "analysis_model": "pressure_pulse",
+        "analysis_model": "pressure_pulse_v2",
         "units": {
             "pressure": "inH2O",
             "current": "mA",
@@ -667,6 +848,7 @@ def build_payload() -> dict[str, Any]:
         "stats_24h": {},
         "prediction": {},
         "flush_analysis": {},
+        "data_quality": {},
         "history": {
             "pressure_15m": [],
             "pressure_1h": [],
@@ -690,9 +872,16 @@ def build_payload() -> dict[str, Any]:
             "notes": ["The monitor database does not exist yet."],
         }
         payload["flush_analysis"] = payload["prediction"]
+        payload["data_quality"] = {
+            "level": "poor",
+            "sensor_level": "poor",
+            "analysis_level": "limited",
+            "message": "The monitor database does not exist yet.",
+            "issues": ["No monitor database."],
+        }
         return payload
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     try:
         now = utc_now()
         latest = fetch_latest(conn)
@@ -709,6 +898,7 @@ def build_payload() -> dict[str, Any]:
 
         flush_events_24h = detect_flush_events(rows_24h, float(limits["pressure_inh2o"]["baseline_high"]))
         flush_analysis = build_flush_summary(flush_events_24h, limits, float(stats_24h["coverage_hours"] or 0.0))
+        data_quality = build_data_quality(latest, stats_15m, stats_24h, flush_analysis, sample_hz, now)
 
         payload["latest"] = latest
         payload["recent_peak"] = peak_reading(rows_15m)
@@ -719,6 +909,7 @@ def build_payload() -> dict[str, Any]:
         payload["stats_6h"] = stats_6h
         payload["stats_24h"] = stats_24h
         payload["flush_analysis"] = flush_analysis
+        payload["data_quality"] = data_quality
         payload["prediction"] = {
             "risk_score": flush_analysis.get("clog_signal_score"),
             "risk_level": flush_analysis.get("clog_signal_level"),
