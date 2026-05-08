@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>House Sewer Pressure Monitor</title>
+    <meta
+      name="description"
+      content="Charts, flush-pulse stats, and clog-signal analysis from the Raspberry Pi sewer pressure monitor."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./vendor/chart.umd.min.js"></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <section class="hero reveal">
+        <div class="hero-copy">
+          <p class="eyebrow">House Sewer Pressure Watch</p>
+          <h1>Air-pressure pulses, flush history, and early clog signals.</h1>
+          <p class="lede">
+            This monitor is reading air pressure in the sewer pipe, not water depth. The logic is simple:
+            if a toilet flush creates a higher pressure pulse and the pressure stays elevated longer before
+            settling, the line is likely seeing more resistance.
+          </p>
+          <div class="hero-meta">
+            <span id="lastSample" class="chip">Waiting for monitor data</span>
+            <span id="lastSync" class="chip chip-muted">Sync idle</span>
+          </div>
+        </div>
+        <div class="risk-card">
+          <div class="risk-ring" id="riskRing">
+            <div class="risk-ring-inner">
+              <span class="risk-score" id="riskScore">--</span>
+              <span class="risk-label" id="riskLevel">Waiting</span>
+            </div>
+          </div>
+          <p class="risk-note" id="riskNote">Clog signal score will update once flush-pulse history is available.</p>
+          <p class="confidence" id="confidenceLine">Confidence: low</p>
+        </div>
+      </section>
+
+      <section class="metric-grid reveal" id="metricGrid">
+        <article class="metric">
+          <span class="metric-label">Current pressure</span>
+          <strong id="currentPressure">--</strong>
+          <small id="currentPressureSub">quiet pipe baseline right now</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">15m peak</span>
+          <strong id="peak15Pressure">--</strong>
+          <small id="peak15PressureSub">highest recent pulse</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Last flush peak</span>
+          <strong id="lastFlushPeak">--</strong>
+          <small id="lastFlushPeakSub">most recent detected flush event</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Last pulse width</span>
+          <strong id="lastFlushHold">--</strong>
+          <small id="lastFlushHoldSub">time above trigger pressure</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Last recovery</span>
+          <strong id="lastRecovery">--</strong>
+          <small id="lastRecoverySub">time from peak back to trigger</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Typical flush peak</span>
+          <strong id="typicalPeak">--</strong>
+          <small id="typicalPeakSub">reference from recent flushes</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Peak vs typical</span>
+          <strong id="peakRatio">--</strong>
+          <small id="peakRatioSub">higher means stronger pressure build</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Recovery vs typical</span>
+          <strong id="recoveryRatio">--</strong>
+          <small id="recoveryRatioSub">higher means slower pressure release</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">24h flush count</span>
+          <strong id="flushCount24h">--</strong>
+          <small id="flushCount24hSub">events crossing the trigger band</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Pressure state</span>
+          <strong id="alarmState">--</strong>
+          <small id="alarmStateSub">current sewer-pipe pressure band</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Sensor status</span>
+          <strong id="sensorStatus">--</strong>
+          <small id="sensorStatusSub">4-20 mA loop health</small>
+        </article>
+        <article class="metric">
+          <span class="metric-label">24h samples</span>
+          <strong id="sampleCount">--</strong>
+          <small id="sampleCountSub">history used in analysis</small>
+        </article>
+      </section>
+
+      <section class="panel-grid reveal">
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Recent Flushes</p>
+              <h2>Pressure over the last 15 minutes</h2>
+            </div>
+            <p class="panel-copy">High-resolution pressure trace with quiet, normal flush, watch, elevated, and alarm bands.</p>
+          </div>
+          <canvas id="recentChart" height="110"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Short Window</p>
+              <h2>Pressure over the last hour</h2>
+            </div>
+          </div>
+          <canvas id="hourChart" height="220"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Medium Window</p>
+              <h2>Pressure over the last 6 hours</h2>
+            </div>
+          </div>
+          <canvas id="sixHourChart" height="220"></canvas>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Trend</p>
+              <h2>Pressure over the last 24 hours</h2>
+            </div>
+            <p class="panel-copy">This keeps the production-style long-range chart, but now it is anchored to sewer-pipe air pressure instead of depth.</p>
+          </div>
+          <canvas id="pressureChart" height="110"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Sensor Loop</p>
+              <h2>24h loop current</h2>
+            </div>
+          </div>
+          <canvas id="currentChart" height="220"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Long History</p>
+              <h2>30-day daily pressure peaks</h2>
+            </div>
+          </div>
+          <canvas id="dailyPeakChart" height="220"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Flush Events</p>
+              <h2>Recent flush peak pressure</h2>
+            </div>
+          </div>
+          <canvas id="flushPeakChart" height="220"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Pulse Timing</p>
+              <h2>Hold and recovery by flush</h2>
+            </div>
+          </div>
+          <canvas id="flushTimingChart" height="220"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Windows</p>
+              <h2>15m / 1h / 6h / 24h stats</h2>
+            </div>
+          </div>
+          <div id="windowStatsList" class="stack-list"></div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Alarm Limits</p>
+              <h2>Operating ranges and thresholds</h2>
+            </div>
+            <p class="panel-copy">Named pressure bands make it obvious whether a pulse looks like a normal flush or a restriction signal.</p>
+          </div>
+          <div id="limitsList" class="limits-grid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Event Log</p>
+              <h2>Recent flush events</h2>
+            </div>
+          </div>
+          <div id="flushEventsList" class="stack-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Monitor</p>
+              <h2>Alerts and faults</h2>
+            </div>
+          </div>
+          <div id="eventsList" class="stack-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Clog Signal</p>
+              <h2>Prediction inputs</h2>
+            </div>
+          </div>
+          <div id="driversList" class="stack-list"></div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">System</p>
+              <h2>Monitor state</h2>
+            </div>
+          </div>
+          <div class="system-grid">
+            <div>
+              <span class="system-label">Monitor host</span>
+              <strong id="monitorHost">--</strong>
+            </div>
+            <div>
+              <span class="system-label">Database</span>
+              <strong id="databasePath">--</strong>
+            </div>
+            <div>
+              <span class="system-label">Alarm pressure</span>
+              <strong id="alertPressure">--</strong>
+            </div>
+            <div>
+              <span class="system-label">Trigger pressure</span>
+              <strong id="triggerPressure">--</strong>
+            </div>
+            <div>
+              <span class="system-label">24h coverage</span>
+              <strong id="coverageHours">--</strong>
+            </div>
+            <div>
+              <span class="system-label">Sync state</span>
+              <strong id="syncState">--</strong>
+            </div>
+            <div>
+              <span class="system-label">Sample rate</span>
+              <strong id="sampleRate">--</strong>
+            </div>
+            <div>
+              <span class="system-label">Analysis model</span>
+              <strong id="analysisModel">--</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <footer class="footer reveal">
+        <p>
+          The clog signal is driven by flush-pulse peak pressure, pulse width, and recovery time versus your recent typical flushes. Higher and longer pulses mean the line is pushing back harder.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

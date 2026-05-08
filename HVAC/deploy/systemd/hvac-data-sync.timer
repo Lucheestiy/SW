@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HVAC sewer data sync every 15 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15s
+AccuracySec=1s
+Unit=hvac-data-sync.service
+
+[Install]
+WantedBy=timers.target
