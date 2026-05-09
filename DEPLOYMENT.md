@@ -36,6 +36,9 @@ that JSON into the SW webroot, and nginx publishes it through
 - Local health service/timer:
   - `/etc/systemd/system/sw-health-check.service`
   - `/etc/systemd/system/sw-health-check.timer`
+- Local service failure recorder:
+  - `/etc/systemd/system/sw-service-failure@.service`
+  - `/root/scripts/record_service_failure.py`
 
 ## Data Path
 
@@ -50,6 +53,23 @@ that JSON into the SW webroot, and nginx publishes it through
   - `/var/www/sw.lucheestiy.com/data/backup.json`
 - The health check writes:
   - `/var/www/sw.lucheestiy.com/data/health.json`
+- Sync, backup, and health service failures append to:
+  - `/var/log/sw-service-failures.log`
+  - `/var/www/sw.lucheestiy.com/data/service-failure.json`
+- A successful health check clears `service-failure.json` after the dashboard
+  pipeline has recovered.
+
+## SSH And Tunnel Access
+
+- The public reverse tunnel uses `/root/.ssh/id_ed25519_sw_tunnel`.
+- The VPS should authorize that key only for remote forwarding to
+  `127.0.0.1:18095`.
+- Local and Pi SSH use `/etc/ssh/sshd_config.d/99-lucheestiy-scoped-auth.conf`.
+- Password login and root password login are enabled only from loopback,
+  private LAN ranges, and Tailscale (`100.64.0.0/10`); public-source SSH
+  requires keys.
+- If VPS admin SSH is unavailable, restore the admin public key from provider
+  console before changing the VPS nginx or SSH configuration.
 
 ## Updating The Site
 

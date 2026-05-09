@@ -8,13 +8,13 @@ User=root
 Environment="AUTOSSH_GATETIME=0"
 ExecStart=/usr/bin/autossh -M 0 -N \
   -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=2 \
   -o StrictHostKeyChecking=accept-new \
-  -i /root/.ssh/id_ed25519_inyp_vps \
+  -i /root/.ssh/id_ed25519_sw_tunnel \
   -R 127.0.0.1:18095:127.0.0.1:8095 root@104.236.97.60
 Restart=always
-RestartSec=15
+RestartSec=40
 
 [Install]
 WantedBy=multi-user.target

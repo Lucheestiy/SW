@@ -1,0 +1,13 @@
+[Unit]
+Description=Record SW service failure for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/scripts/record_service_failure.py %i
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

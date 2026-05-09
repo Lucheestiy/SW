@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -19,6 +18,7 @@ DASHBOARD_PATH = DATA_DIR / "dashboard.json"
 SYNC_PATH = DATA_DIR / "sync.json"
 SSH_TARGET = "sewer-pi"
 REMOTE_SNAPSHOT = f"{SSH_TARGET}:/root/sewer-monitor/public/dashboard.json"
+REMOTE_SNAPSHOT_PATH = "/root/sewer-monitor/public/dashboard.json"
 RSYNC_SSH = (
     "ssh -T -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 "
     "-o ServerAliveInterval=5 -o ServerAliveCountMax=1"
@@ -55,7 +55,10 @@ def sync_status_payload(status: str, **extra: Any) -> dict[str, Any]:
     payload = {
         "status": status,
         "target": SSH_TARGET,
-        "command": shlex.join(rsync_command(Path("<tmp>"))),
+        "source": {
+            "transport": "rsync",
+            "path": REMOTE_SNAPSHOT_PATH,
+        },
         "last_attempt_at": utc_now_iso(),
     }
     payload.update(extra)

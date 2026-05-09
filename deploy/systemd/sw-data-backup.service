@@ -2,6 +2,7 @@
 Description=Back up SW sewer monitor history from Raspberry Pi
 After=network-online.target
 Wants=network-online.target
+OnFailure=sw-service-failure@%N.service
 
 [Service]
 Type=oneshot
