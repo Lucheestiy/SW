@@ -55,6 +55,9 @@ let lastBackup = null;
 const fmtTime = new Intl.DateTimeFormat(undefined, {
   hour: "numeric", minute: "2-digit",
 });
+const fmtTimeS = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric", minute: "2-digit", second: "2-digit",
+});
 const fmtDateTime = new Intl.DateTimeFormat(undefined, {
   month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
 });
@@ -780,7 +783,7 @@ function attachFlushHover(canvas) {
       return;
     }
     setPulseHover(true);
-    const peakTime = formatTimestamp(hit.flush.peak_timestamp, fmtTime);
+    const peakTime = formatTimestamp(hit.flush.peak_timestamp, fmtTimeS);
     const peakPress = formatPressureCompact(hit.flush.peak_pressure_inh2o);
     const dur = asNumber(hit.flush.duration_seconds);
     const rec = asNumber(hit.flush.recovery_seconds);
@@ -1029,8 +1032,8 @@ function baseTooltip(unit) {
         const win = flushWindow(flush);
         const bits = [`Pulse width ${formatSeconds(flush.duration_seconds)}`];
         if (win) {
-          bits.push(`Start  ${fmtTime.format(new Date(win.start))}`);
-          bits.push(`Finish ${fmtTime.format(new Date(win.end))}`);
+          bits.push(`Start  ${fmtTimeS.format(new Date(win.start))}`);
+          bits.push(`Finish ${fmtTimeS.format(new Date(win.end))}`);
         }
         return bits;
       },

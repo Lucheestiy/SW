@@ -1210,20 +1210,23 @@ h3 { font-size: 1.18rem; }
 .flush-hover-tip {
   position: absolute;
   pointer-events: none;
-  background: var(--paper);
-  border: 1px solid var(--hair);
+  background: var(--chart-tooltip-bg);
+  border: 1px solid var(--chart-tooltip-border);
   border-radius: 4px;
   padding: 5px 8px 6px;
   font-size: 0.7rem;
   font-family: var(--mono);
   letter-spacing: 0.04em;
   line-height: 1.4;
-  color: var(--ink);
+  color: var(--chart-tooltip-fg);
   white-space: pre-line;
-  box-shadow: 0 1px 0 rgba(28, 37, 48, 0.04), 0 6px 14px rgba(28, 37, 48, 0.10);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
   z-index: 4;
 }
 .flush-hover-tip[aria-hidden="true"] { display: none; }
+[data-theme="dark"] .flush-hover-tip {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.55);
+}
 
 /* ─── Status text colors for inline use ───────────────────────── */
 
