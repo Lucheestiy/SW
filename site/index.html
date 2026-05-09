@@ -24,9 +24,9 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.raw-pressure.css" />
     <script defer src="./vendor/chart.umd.min.js"></script>
-    <script defer src="./app.js"></script>
+    <script defer src="./app.raw-pressure.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -117,22 +117,64 @@
             <span class="kicker">Pressure log</span>
             <h2 id="traceHeading">Pressure recording</h2>
           </div>
-          <div
-            class="history-controls"
-            role="tablist"
-            aria-label="Pressure log range"
-            id="historyControls"
-          >
-            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="5m"  aria-selected="false" tabindex="-1">5 min</button>
-            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="1h"  aria-selected="false" tabindex="-1">1 hour</button>
-            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="24h" aria-selected="true"  tabindex="0">24 hours</button>
-            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="7d"  aria-selected="false" tabindex="-1">7 days</button>
-            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="30d" aria-selected="false" tabindex="-1">30 days</button>
+          <div class="history-nav">
+            <div class="control-row">
+              <span class="control-label">Range size</span>
+              <div
+                class="history-controls"
+                role="tablist"
+                aria-label="Pressure log range size"
+                id="historyControls"
+              >
+                <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="5m"  aria-selected="false" tabindex="-1" aria-label="5 minutes"><span class="range-label-full" aria-hidden="true">5 min</span><span class="range-label-short" aria-hidden="true">5m</span></button>
+                <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="1h"  aria-selected="false" tabindex="-1" aria-label="1 hour"><span class="range-label-full" aria-hidden="true">1 hour</span><span class="range-label-short" aria-hidden="true">1h</span></button>
+                <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="24h" aria-selected="true"  tabindex="0" aria-label="24 hours"><span class="range-label-full" aria-hidden="true">24 hours</span><span class="range-label-short" aria-hidden="true">24h</span></button>
+                <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="7d"  aria-selected="false" tabindex="-1" aria-label="7 days"><span class="range-label-full" aria-hidden="true">7 days</span><span class="range-label-short" aria-hidden="true">7d</span></button>
+                <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="30d" aria-selected="false" tabindex="-1" aria-label="30 days"><span class="range-label-full" aria-hidden="true">30 days</span><span class="range-label-short" aria-hidden="true">30d</span></button>
+              </div>
+            </div>
+            <div class="control-row">
+              <span class="control-label">Time window</span>
+              <div class="window-controls" id="windowControls" aria-label="Pressure log time window">
+                <button
+                  class="window-step"
+                  type="button"
+                  id="windowEarlier"
+                  aria-label="Show earlier time window"
+                  title="Show earlier time window"
+                >
+                  <span class="window-step-glyph" aria-hidden="true">&lsaquo;</span>
+                  <span class="window-step-text">Earlier</span>
+                  <span class="window-step-suffix" aria-hidden="true"></span>
+                </button>
+                <button
+                  class="window-now"
+                  type="button"
+                  id="windowNow"
+                  aria-label="Jump back to the latest time window"
+                  title="Jump to latest"
+                >
+                  <span class="window-now-text" id="windowNowLabel">Latest</span>
+                </button>
+                <button
+                  class="window-step"
+                  type="button"
+                  id="windowLater"
+                  aria-label="Show later time window"
+                  title="Show later time window"
+                >
+                  <span class="window-step-text">Later</span>
+                  <span class="window-step-suffix" aria-hidden="true"></span>
+                  <span class="window-step-glyph" aria-hidden="true">&rsaquo;</span>
+                </button>
+              </div>
+            </div>
           </div>
         </header>
         <div class="history-meta" id="historyMeta">
           <span class="meta-pill meta-pill-fresh" id="freshnessPill" data-state="unknown">--</span>
           <span class="meta-pill" id="historyDensity">--</span>
+          <span class="meta-pill meta-pill-window" id="historyWindow" hidden>--</span>
           <span class="meta-pill" id="historySpan">--</span>
           <span class="meta-pill" id="historyExtreme">--</span>
         </div>
@@ -153,47 +195,22 @@
             <span class="stale-overlay-msg" id="staleOverlayMsg">Last data point shown · live sync is offline.</span>
           </div>
         </div>
+        <div class="history-wrap-frame" id="historyWrapFrame" aria-label="Full pressure trace without horizontal scrolling">
+          <canvas id="historyWrapChart"></canvas>
+        </div>
         <ul class="legend" id="pressureLegend" aria-label="Threshold reference"></ul>
-        <p class="history-hint">
-          <kbd>&larr;</kbd> <kbd>&rarr;</kbd> switch range &middot; focus the chart to scroll dense ranges
+        <p class="history-hint" id="historyHint">
+          Range size sets how wide each window is &middot;
+          Time window steps the same window earlier or later &middot;
+          drag inside the chart to scroll within a window
         </p>
-      </section>
-
-      <section class="grid grid-three" aria-label="Pulse windows">
-        <article class="card">
-          <header class="card-head">
-            <span class="kicker">Window &middot; 15 min</span>
-            <h3>Recent flushes</h3>
-          </header>
-          <div class="chart-frame chart-frame-mid">
-            <canvas id="recentChart"></canvas>
-          </div>
-        </article>
-        <article class="card">
-          <header class="card-head">
-            <span class="kicker">Window &middot; 1 hour</span>
-            <h3>Pulse pattern</h3>
-          </header>
-          <div class="chart-frame chart-frame-mid">
-            <canvas id="hourChart"></canvas>
-          </div>
-        </article>
-        <article class="card">
-          <header class="card-head">
-            <span class="kicker">Window &middot; 6 hours</span>
-            <h3>Half-day shape</h3>
-          </header>
-          <div class="chart-frame chart-frame-mid">
-            <canvas id="sixHourChart"></canvas>
-          </div>
-        </article>
       </section>
 
       <section class="grid grid-two" aria-label="Flush analysis">
         <article class="card card-flush-list">
           <header class="card-head">
             <span class="kicker">Flush log &middot; recent</span>
-            <h3>Eight latest flush events</h3>
+            <h3 id="flushLogHeading">Latest flush events</h3>
           </header>
           <div class="table-scroll">
             <table class="flush-table" id="flushTable">
@@ -201,8 +218,8 @@
                 <tr>
                   <th scope="col">When</th>
                   <th scope="col" class="num">Peak</th>
-                  <th scope="col" class="num">Pulse</th>
-                  <th scope="col" class="num">Recover</th>
+                  <th scope="col" class="num" title="Pulse width — seconds the pressure stays above baseline">Width <span class="unit">(s)</span></th>
+                  <th scope="col" class="num" title="Recovery — settling time in seconds for pressure to return to baseline">Recovery <span class="unit">(s)</span></th>
                   <th scope="col" class="num">vs typ.</th>
                 </tr>
               </thead>
@@ -218,7 +235,7 @@
         <article class="card">
           <header class="card-head">
             <span class="kicker">Pulse anatomy</span>
-            <h3>Hold &amp; recovery by flush</h3>
+            <h3>Pulse width &amp; recovery</h3>
           </header>
           <div class="chart-frame chart-frame-mid">
             <canvas id="flushTimingChart"></canvas>

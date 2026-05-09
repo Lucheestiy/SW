@@ -98,6 +98,80 @@ def fetch_rows(conn: sqlite3.Connection, since: datetime) -> list[dict[str, Any]
     return rows
 
 
+def fetch_pressure_buckets(
+    conn: sqlite3.Connection,
+    since: datetime,
+    bucket_seconds: int,
+) -> list[dict[str, Any]]:
+    """SQL-side bucketed pressure history. Avoids materialising every raw
+    sample in Python — important for multi-day spans on a Raspberry Pi."""
+    cursor = conn.execute(
+        """
+        SELECT
+            (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? AS bucket_epoch,
+            MAX(pressure_inh2o) AS max_pressure,
+            AVG(current_ma) AS mean_current,
+            MAX(timestamp) AS last_ts,
+            SUM(CASE WHEN status = 'STALE' THEN 1 ELSE 0 END) AS stale_count,
+            SUM(CASE WHEN status = 'LOOP_BROKEN' THEN 1 ELSE 0 END) AS broken_count,
+            SUM(CASE WHEN status = 'OVER_RANGE' THEN 1 ELSE 0 END) AS over_count
+        FROM readings
+        WHERE timestamp >= ?
+        GROUP BY bucket_epoch
+        ORDER BY bucket_epoch ASC
+        """,
+        (bucket_seconds, bucket_seconds, iso_utc(since)),
+    )
+    buckets: list[dict[str, Any]] = []
+    for _bucket_epoch, max_pressure, mean_current, last_ts, stale_count, broken_count, over_count in cursor.fetchall():
+        if last_ts is None:
+            continue
+        if stale_count and stale_count > 0:
+            status = "STALE"
+        elif broken_count and broken_count > 0:
+            status = "LOOP_BROKEN"
+        elif over_count and over_count > 0:
+            status = "OVER_RANGE"
+        else:
+            status = "OK"
+        buckets.append(
+            {
+                "timestamp": last_ts,
+                "pressure_inh2o": positive_pressure(max_pressure),
+                "current_ma": float(mean_current) if mean_current is not None else None,
+                "status": status,
+            }
+        )
+    return buckets
+
+
+def fetch_pulse_rows(
+    conn: sqlite3.Connection,
+    since: datetime,
+    trigger_pressure: float,
+) -> list[dict[str, Any]]:
+    """Fetch only above-threshold readings — cheap proxy for flush detection
+    over multi-day spans without iterating every baseline sample in Python."""
+    cursor = conn.execute(
+        """
+        SELECT timestamp, current_ma, pressure_inh2o, status
+        FROM readings
+        WHERE timestamp >= ? AND pressure_inh2o >= ?
+        ORDER BY timestamp ASC
+        """,
+        (iso_utc(since), trigger_pressure),
+    )
+    return [
+        {
+            "timestamp": timestamp,
+            "current_ma": current_ma,
+            "pressure_inh2o": pressure_inh2o,
+            "status": status,
+        }
+        for timestamp, current_ma, pressure_inh2o, status in cursor.fetchall()
+    ]
+
+
 def fetch_latest(conn: sqlite3.Connection) -> dict[str, Any] | None:
     row = conn.execute(
         """
@@ -200,6 +274,22 @@ def bucket_rows(rows: list[dict[str, Any]], bucket_seconds: int) -> list[dict[st
 
     flush(current_rows)
     return buckets
+
+
+def raw_pressure_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    raw: list[dict[str, Any]] = []
+    for row in rows:
+        if not row.get("timestamp"):
+            continue
+        raw.append(
+            {
+                "timestamp": row.get("timestamp"),
+                "pressure_inh2o": row_pressure(row),
+                "current_ma": row.get("current_ma"),
+                "status": row.get("status"),
+            }
+        )
+    return raw
 
 
 def peak_reading(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -490,6 +580,79 @@ def detect_flush_events(
     return events
 
 
+def detect_flush_events_sparse(
+    rows: list[dict[str, Any]],
+    sample_hz: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Group above-threshold rows into events without merging across any
+    baseline-period gap. Two consecutive rows belong to the same pulse
+    only when their spacing is consistent with no below-threshold sample
+    sitting between them — i.e. the gap is at most one sample period plus
+    a small tolerance for jitter. Used for the 7-day history view; loses
+    area integration but preserves the fields needed for chart pulse
+    markers (peak, duration, recovery) and keeps every distinct pulse."""
+    sample_period = 1.0 / max(float(sample_hz) or 1.0, 0.001)
+    contiguous_gap_seconds = max(sample_period * 1.75, 1.5)
+
+    events: list[dict[str, Any]] = []
+    active: dict[str, Any] | None = None
+
+    def close() -> None:
+        nonlocal active
+        if not active:
+            return
+        events.append(
+            {
+                "start_timestamp": active["start_timestamp"],
+                "end_timestamp": active["end_timestamp"],
+                "peak_timestamp": active["peak_timestamp"],
+                "peak_pressure_inh2o": round(active["peak_pressure_inh2o"], 4),
+                "peak_current_ma": round(active["peak_current_ma"], 4) if active["peak_current_ma"] is not None else None,
+                "samples": active["samples"],
+                "duration_seconds": round((active["end_dt"] - active["start_dt"]).total_seconds(), 1),
+                "recovery_seconds": round((active["end_dt"] - active["peak_dt"]).total_seconds(), 1),
+            }
+        )
+        active = None
+
+    previous_dt: datetime | None = None
+    for row in rows:
+        dt = parse_iso(row.get("timestamp"))
+        if dt is None:
+            continue
+        pressure = row_pressure(row)
+        current_ma = row.get("current_ma")
+        current_value = float(current_ma) if current_ma is not None else None
+
+        if active and previous_dt and (dt - previous_dt).total_seconds() > contiguous_gap_seconds:
+            close()
+
+        if active is None:
+            active = {
+                "start_dt": dt,
+                "end_dt": dt,
+                "peak_dt": dt,
+                "start_timestamp": row["timestamp"],
+                "end_timestamp": row["timestamp"],
+                "peak_timestamp": row["timestamp"],
+                "peak_pressure_inh2o": pressure,
+                "peak_current_ma": current_value,
+                "samples": 0,
+            }
+        active["end_dt"] = dt
+        active["end_timestamp"] = row["timestamp"]
+        active["samples"] += 1
+        if pressure >= active["peak_pressure_inh2o"]:
+            active["peak_pressure_inh2o"] = pressure
+            active["peak_timestamp"] = row["timestamp"]
+            active["peak_dt"] = dt
+            active["peak_current_ma"] = current_value
+        previous_dt = dt
+
+    close()
+    return events
+
+
 def build_flush_summary(
     events_24h: list[dict[str, Any]],
     limits: dict[str, Any],
@@ -504,6 +667,7 @@ def build_flush_summary(
             "count_24h": 0,
             "recent": [],
             "top_24h": [],
+            "events_24h": [],
             "last_event": None,
             "comparison": {},
             "trend": build_flush_trend(events_24h),
@@ -619,6 +783,7 @@ def build_flush_summary(
         "count_24h": count,
         "recent": recent[:8],
         "top_24h": top[:8],
+        "events_24h": list(recent),
         "last_event": last_event,
         "comparison": comparison,
         "trend": build_flush_trend(events_24h),
@@ -854,6 +1019,7 @@ def build_payload() -> dict[str, Any]:
             "pressure_1h": [],
             "pressure_6h": [],
             "pressure_24h": [],
+            "pressure_history_7d": [],
             "daily_peaks_7d": [],
             "daily_peaks_30d": [],
         },
@@ -896,8 +1062,15 @@ def build_payload() -> dict[str, Any]:
         stats_6h = summarize_window(rows_6h, limits, sample_hz)
         stats_24h = summarize_window(rows_24h, limits, sample_hz)
 
-        flush_events_24h = detect_flush_events(rows_24h, float(limits["pressure_inh2o"]["baseline_high"]))
+        baseline_trigger = float(limits["pressure_inh2o"]["baseline_high"])
+        flush_events_24h = detect_flush_events(rows_24h, baseline_trigger)
         flush_analysis = build_flush_summary(flush_events_24h, limits, float(stats_24h["coverage_hours"] or 0.0))
+        # 7-day flush events for shifted-window pulse markers. SQL filters
+        # below-trigger samples so we only iterate the few hundred rows that
+        # actually matter for pulse detection.
+        pulse_rows_7d = fetch_pulse_rows(conn, now - timedelta(days=7), baseline_trigger)
+        flush_events_history_7d = detect_flush_events_sparse(pulse_rows_7d, sample_hz=sample_hz)
+        flush_analysis["events_history_7d"] = flush_events_history_7d
         data_quality = build_data_quality(latest, stats_15m, stats_24h, flush_analysis, sample_hz, now)
 
         payload["latest"] = latest
@@ -920,7 +1093,10 @@ def build_payload() -> dict[str, Any]:
         payload["history"]["pressure_15m"] = bucket_rows(rows_15m, 5)
         payload["history"]["pressure_1h"] = bucket_rows(rows_1h, 15)
         payload["history"]["pressure_6h"] = bucket_rows(rows_6h, 60)
-        payload["history"]["pressure_24h"] = bucket_rows(rows_24h, 300)
+        payload["history"]["pressure_24h"] = raw_pressure_rows(rows_24h)
+        # 15-min buckets for the long line history. Keeps payload small while
+        # still preserving pulse peaks (MAX aggregation in SQL).
+        payload["history"]["pressure_history_7d"] = fetch_pressure_buckets(conn, now - timedelta(days=7), 900)
         payload["history"]["daily_peaks_7d"] = daily_peaks(conn, 7)
         payload["history"]["daily_peaks_30d"] = daily_peaks(conn, 30)
     finally:
