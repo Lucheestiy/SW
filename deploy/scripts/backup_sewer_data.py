@@ -15,16 +15,16 @@ from pathlib import Path
 from typing import Any
 
 
-SSH_TARGET = os.environ.get("HVAC_BACKUP_SSH_TARGET", "hvac-pi")
-REMOTE_BASE = os.environ.get("HVAC_BACKUP_REMOTE_BASE", "/root/sewer-monitor")
-REMOTE_PYTHON = os.environ.get("HVAC_BACKUP_REMOTE_PYTHON", f"{REMOTE_BASE}/venv/bin/python")
-BACKUP_ROOT = Path(os.environ.get("HVAC_BACKUP_ROOT", "/root/backups/hvac-sewer"))
-RETENTION_DAYS = int(os.environ.get("HVAC_BACKUP_RETENTION_DAYS", "731"))
-LOCK_PATH = Path(os.environ.get("HVAC_BACKUP_LOCK", "/run/hvac-data-backup.lock"))
+SSH_TARGET = os.environ.get("SEWER_BACKUP_SSH_TARGET", "sewer-pi")
+REMOTE_BASE = os.environ.get("SEWER_BACKUP_REMOTE_BASE", "/root/sewer-monitor")
+REMOTE_PYTHON = os.environ.get("SEWER_BACKUP_REMOTE_PYTHON", f"{REMOTE_BASE}/venv/bin/python")
+BACKUP_ROOT = Path(os.environ.get("SEWER_BACKUP_ROOT", "/root/backups/sewer-monitor"))
+RETENTION_DAYS = int(os.environ.get("SEWER_BACKUP_RETENTION_DAYS", "731"))
+LOCK_PATH = Path(os.environ.get("SEWER_BACKUP_LOCK", "/run/sw-data-backup.lock"))
 MANIFEST_PATH = BACKUP_ROOT / "manifest.json"
-PUBLIC_STATUS_PATH = Path(os.environ.get("HVAC_BACKUP_PUBLIC_STATUS", "/var/www/hvac.lucheestiy.com/data/backup.json"))
-OFFSITE_TARGET = os.environ.get("HVAC_BACKUP_OFFSITE_TARGET", "inyp-vps")
-OFFSITE_ROOT = os.environ.get("HVAC_BACKUP_OFFSITE_ROOT", "/root/backups/hvac-sewer")
+PUBLIC_STATUS_PATH = Path(os.environ.get("SEWER_BACKUP_PUBLIC_STATUS", "/var/www/sw.lucheestiy.com/data/backup.json"))
+OFFSITE_TARGET = os.environ.get("SEWER_BACKUP_OFFSITE_TARGET", "inyp-vps")
+OFFSITE_ROOT = os.environ.get("SEWER_BACKUP_OFFSITE_ROOT", "/root/backups/sewer-monitor")
 
 
 def utc_now() -> datetime:
@@ -258,7 +258,7 @@ def main() -> int:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print("hvac backup already running", file=sys.stderr)
+            print("sewer backup already running", file=sys.stderr)
             return 75
 
         try:

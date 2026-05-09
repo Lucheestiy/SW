@@ -1,0 +1,8 @@
+[Unit]
+Description=Write sewer dashboard snapshot JSON on the Raspberry Pi
+Requires=sewer-monitor.service
+After=sewer-monitor.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/sewer-monitor/venv/bin/python /root/sewer-monitor/write_snapshot.py

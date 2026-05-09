@@ -1,5 +1,5 @@
 [Unit]
-Description=Reverse SSH tunnel for hvac.lucheestiy.com (VPS 18094 -> local 8094)
+Description=Reverse SSH tunnel for sw.lucheestiy.com (VPS 18095 -> local 8095)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,9 +12,9 @@ ExecStart=/usr/bin/autossh -M 0 -N \
   -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new \
   -i /root/.ssh/id_ed25519_inyp_vps \
-  -R 127.0.0.1:18094:127.0.0.1:8094 root@104.236.97.60
+  -R 127.0.0.1:18095:127.0.0.1:8095 root@104.236.97.60
 Restart=always
-RestartSec=5
+RestartSec=15
 
 [Install]
 WantedBy=multi-user.target

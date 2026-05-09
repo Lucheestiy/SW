@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SW sewer data sync every minute
+
+[Timer]
+OnBootSec=45s
+OnCalendar=*-*-* *:*:20
+AccuracySec=1s
+Unit=sw-data-sync.service
+
+[Install]
+WantedBy=timers.target

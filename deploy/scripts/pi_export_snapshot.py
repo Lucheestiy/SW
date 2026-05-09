@@ -832,7 +832,7 @@ def build_payload() -> dict[str, Any]:
             "current": "mA",
             "duration": "s",
         },
-        "monitor_host": "hvacsw",
+        "monitor_host": "sewer-pi",
         "paths": {
             "config": str(CONFIG_PATH),
             "database": str(DB_PATH),

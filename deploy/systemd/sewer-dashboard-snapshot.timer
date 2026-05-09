@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh sewer dashboard snapshot JSON every minute
+
+[Timer]
+OnBootSec=30s
+OnCalendar=*-*-* *:*:05
+AccuracySec=1s
+Unit=sewer-dashboard-snapshot.service
+
+[Install]
+WantedBy=timers.target

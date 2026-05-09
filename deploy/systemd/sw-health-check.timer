@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SW sewer dashboard health check every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=sw-health-check.service
+
+[Install]
+WantedBy=timers.target

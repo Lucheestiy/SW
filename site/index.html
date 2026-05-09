@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sewer Watch &middot; pressure log</title>
+    <meta
+      name="description"
+      content="Continuous sewer-pipe pressure log, flush analysis, and clog signal from the home Raspberry Pi monitor."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("sw.theme");
+          var theme = (saved === "light" || saved === "dark")
+            ? saved
+            : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light");
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./vendor/chart.umd.min.js"></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="masthead" aria-label="Site header">
+      <div class="masthead-row">
+        <div class="masthead-mark" aria-hidden="true">
+          <span class="mark-line"></span>
+          <span class="mark-line mark-line-short"></span>
+          <span class="mark-line"></span>
+        </div>
+        <div class="masthead-title">
+          <span class="masthead-eyebrow">Sewer Watch</span>
+          <span class="masthead-sub">House sewer-pipe pressure log &middot; <span id="generatedClock">--</span></span>
+        </div>
+        <dl class="masthead-meta" id="syncMeta">
+          <div>
+            <dt>Sample</dt>
+            <dd id="lastSample">--</dd>
+          </div>
+          <div>
+            <dt>Sync</dt>
+            <dd id="lastSync">--</dd>
+          </div>
+          <div>
+            <dt>Sensor</dt>
+            <dd id="sensorStatus">--</dd>
+          </div>
+        </dl>
+        <button
+          type="button"
+          id="themeToggle"
+          class="theme-toggle"
+          aria-pressed="false"
+          aria-label="Switch to dark theme"
+          title="Switch theme"
+        >
+          <span class="theme-icon" aria-hidden="true"></span>
+          <span class="theme-label">Dark</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main" class="page">
+      <section class="verdict" aria-label="Current sewer status">
+        <div class="verdict-status" id="verdictBlock" data-level="unknown">
+          <span class="verdict-tag" id="verdictTag">Status</span>
+          <h1 class="verdict-headline" id="verdictHeadline">Waiting for monitor data</h1>
+          <p class="verdict-detail" id="verdictDetail">
+            The sewer-pipe pressure log will populate as soon as the Pi exporter delivers a fresh sample.
+          </p>
+          <p class="verdict-meta">
+            <span class="meta-item"><span class="meta-key">Score</span><span class="meta-val" id="scoreValue">--</span></span>
+            <span class="meta-divider" aria-hidden="true">/</span>
+            <span class="meta-item"><span class="meta-key">Confidence</span><span class="meta-val" id="confidenceValue">--</span></span>
+            <span class="meta-divider" aria-hidden="true">/</span>
+            <span class="meta-item"><span class="meta-key">24h flushes</span><span class="meta-val" id="flushCountValue">--</span></span>
+          </p>
+        </div>
+
+        <div class="verdict-readouts" aria-label="Latest readouts">
+          <div class="readout">
+            <span class="readout-key">Pressure now</span>
+            <span class="readout-val readout-num" id="readPressure">--</span>
+            <span class="readout-foot" id="readPressureFoot">quiet pipe baseline</span>
+          </div>
+          <div class="readout">
+            <span class="readout-key">Loop current</span>
+            <span class="readout-val readout-num" id="readCurrent">--</span>
+            <span class="readout-foot" id="readCurrentFoot">--</span>
+          </div>
+          <div class="readout">
+            <span class="readout-key">Last flush peak</span>
+            <span class="readout-val readout-num" id="readFlush">--</span>
+            <span class="readout-foot" id="readFlushFoot">--</span>
+          </div>
+          <div class="readout">
+            <span class="readout-key">Recovery</span>
+            <span class="readout-val readout-num" id="readRecovery">--</span>
+            <span class="readout-foot" id="readRecoveryFoot">--</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="trace-card" aria-labelledby="traceHeading" data-stale="false">
+        <header class="trace-head">
+          <div class="trace-title">
+            <span class="kicker">Pressure log</span>
+            <h2 id="traceHeading">Pressure recording</h2>
+          </div>
+          <div
+            class="history-controls"
+            role="tablist"
+            aria-label="Pressure log range"
+            id="historyControls"
+          >
+            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="5m"  aria-selected="false" tabindex="-1">5 min</button>
+            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="1h"  aria-selected="false" tabindex="-1">1 hour</button>
+            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="24h" aria-selected="true"  tabindex="0">24 hours</button>
+            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="7d"  aria-selected="false" tabindex="-1">7 days</button>
+            <button class="history-range" type="button" role="tab" aria-controls="historyScroll" data-range="30d" aria-selected="false" tabindex="-1">30 days</button>
+          </div>
+        </header>
+        <div class="history-meta" id="historyMeta">
+          <span class="meta-pill meta-pill-fresh" id="freshnessPill" data-state="unknown">--</span>
+          <span class="meta-pill" id="historyDensity">--</span>
+          <span class="meta-pill" id="historySpan">--</span>
+          <span class="meta-pill" id="historyExtreme">--</span>
+        </div>
+        <div class="history-frame">
+          <div
+            class="history-scroll"
+            id="historyScroll"
+            tabindex="0"
+            role="tabpanel"
+            aria-label="Pressure chart"
+          >
+            <div class="history-track" id="historyTrack">
+              <canvas id="historyChart"></canvas>
+            </div>
+          </div>
+          <div class="stale-overlay" id="staleOverlay" hidden>
+            <span class="stale-overlay-tag">Stale</span>
+            <span class="stale-overlay-msg" id="staleOverlayMsg">Last data point shown · live sync is offline.</span>
+          </div>
+        </div>
+        <ul class="legend" id="pressureLegend" aria-label="Threshold reference"></ul>
+        <p class="history-hint">
+          <kbd>&larr;</kbd> <kbd>&rarr;</kbd> switch range &middot; focus the chart to scroll dense ranges
+        </p>
+      </section>
+
+      <section class="grid grid-three" aria-label="Pulse windows">
+        <article class="card">
+          <header class="card-head">
+            <span class="kicker">Window &middot; 15 min</span>
+            <h3>Recent flushes</h3>
+          </header>
+          <div class="chart-frame chart-frame-mid">
+            <canvas id="recentChart"></canvas>
+          </div>
+        </article>
+        <article class="card">
+          <header class="card-head">
+            <span class="kicker">Window &middot; 1 hour</span>
+            <h3>Pulse pattern</h3>
+          </header>
+          <div class="chart-frame chart-frame-mid">
+            <canvas id="hourChart"></canvas>
+          </div>
+        </article>
+        <article class="card">
+          <header class="card-head">
+            <span class="kicker">Window &middot; 6 hours</span>
+            <h3>Half-day shape</h3>
+          </header>
+          <div class="chart-frame chart-frame-mid">
+            <canvas id="sixHourChart"></canvas>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid grid-two" aria-label="Flush analysis">
+        <article class="card card-flush-list">
+          <header class="card-head">
+            <span class="kicker">Flush log &middot; recent</span>
+            <h3>Eight latest flush events</h3>
+          </header>
+          <div class="table-scroll">
+            <table class="flush-table" id="flushTable">
+              <thead>
+                <tr>
+                  <th scope="col">When</th>
+                  <th scope="col" class="num">Peak</th>
+                  <th scope="col" class="num">Pulse</th>
+                  <th scope="col" class="num">Recover</th>
+                  <th scope="col" class="num">vs typ.</th>
+                </tr>
+              </thead>
+              <tbody id="flushTableBody">
+                <tr>
+                  <td colspan="5" class="empty">No flush events yet — flush a fixture to seed a baseline pulse.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card">
+          <header class="card-head">
+            <span class="kicker">Pulse anatomy</span>
+            <h3>Hold &amp; recovery by flush</h3>
+          </header>
+          <div class="chart-frame chart-frame-mid">
+            <canvas id="flushTimingChart"></canvas>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid grid-two" aria-label="Long history">
+        <article class="card">
+          <header class="card-head">
+            <span class="kicker">History &middot; 30 days</span>
+            <h3>Daily peak pressure</h3>
+          </header>
+          <div class="chart-frame chart-frame-mid">
+            <canvas id="dailyPeakChart"></canvas>
+          </div>
+        </article>
+
+        <article class="card">
+          <header class="card-head">
+            <span class="kicker">Sensor loop &middot; 24h</span>
+            <h3>4&ndash;20 mA loop current</h3>
+          </header>
+          <div class="chart-frame chart-frame-mid">
+            <canvas id="currentChart"></canvas>
+          </div>
+        </article>
+      </section>
+
+      <section class="card window-stats" aria-label="Window statistics">
+        <header class="card-head">
+          <span class="kicker">Window roll-up</span>
+          <h3>Pressure stats by window</h3>
+        </header>
+        <div class="table-scroll">
+          <table class="stats-table" id="windowStatsTable">
+            <thead>
+              <tr>
+                <th scope="col">Window</th>
+                <th scope="col" class="num">Peak</th>
+                <th scope="col" class="num">P95</th>
+                <th scope="col" class="num">Above baseline</th>
+                <th scope="col" class="num">Above watch</th>
+                <th scope="col" class="num">Coverage</th>
+                <th scope="col" class="num">Faults</th>
+              </tr>
+            </thead>
+            <tbody id="windowStatsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card bands" aria-label="Operating bands">
+        <header class="card-head">
+          <span class="kicker">Reference</span>
+          <h3>Operating bands &amp; pressure thresholds</h3>
+        </header>
+        <ol class="band-list" id="bandList"></ol>
+      </section>
+
+      <section class="grid grid-three" aria-label="System health">
+        <article class="card health-card" id="healthData">
+          <header class="card-head">
+            <span class="kicker">Data quality</span>
+            <h3 id="qualityHeadline">--</h3>
+          </header>
+          <p class="health-body" id="qualityBody">--</p>
+          <dl class="health-detail" id="qualityDetail"></dl>
+        </article>
+
+        <article class="card health-card" id="healthBackup">
+          <header class="card-head">
+            <span class="kicker">Backup</span>
+            <h3 id="backupHeadline">--</h3>
+          </header>
+          <p class="health-body" id="backupBody">--</p>
+          <dl class="health-detail" id="backupDetail"></dl>
+        </article>
+
+        <article class="card health-card" id="healthDrivers">
+          <header class="card-head">
+            <span class="kicker">Clog signal &middot; inputs</span>
+            <h3>Drivers</h3>
+          </header>
+          <dl class="health-detail driver-list" id="driverList"></dl>
+        </article>
+      </section>
+
+      <section class="card events" aria-label="Recent events">
+        <header class="card-head">
+          <span class="kicker">Monitor log</span>
+          <h3>Recent alerts &amp; faults</h3>
+        </header>
+        <ul class="event-list" id="eventList">
+          <li class="empty">No alerts or faults reported.</li>
+        </ul>
+      </section>
+
+      <section class="card system" aria-label="System info">
+        <header class="card-head">
+          <span class="kicker">System</span>
+          <h3>Monitor configuration</h3>
+        </header>
+        <dl class="system-grid">
+          <div><dt>Monitor host</dt><dd id="sysHost">--</dd></div>
+          <div><dt>Database</dt><dd id="sysDb">--</dd></div>
+          <div><dt>Alarm pressure</dt><dd id="sysAlert">--</dd></div>
+          <div><dt>Trigger pressure</dt><dd id="sysTrigger">--</dd></div>
+          <div><dt>Sample rate</dt><dd id="sysRate">--</dd></div>
+          <div><dt>24h coverage</dt><dd id="sysCoverage">--</dd></div>
+          <div><dt>Sync state</dt><dd id="sysSync">--</dd></div>
+          <div><dt>Analysis model</dt><dd id="sysModel">--</dd></div>
+        </dl>
+      </section>
+    </main>
+
+    <footer class="colophon">
+      <p>
+        Pressure pulses are sampled at the sewer cleanout, then compared against the recent typical flush. A rising
+        clog signal means recent flushes have unusually high peak pressure, slow recovery, or both.
+      </p>
+      <p class="colophon-meta">
+        Snapshot generated <span id="generatedAtFoot">--</span> &middot;
+        Source <span id="sourceHost">monitor</span>.
+      </p>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up SW sewer monitor history from Raspberry Pi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=10min
+Nice=5
+ExecStart=/usr/bin/python3 /root/scripts/backup_sewer_data.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

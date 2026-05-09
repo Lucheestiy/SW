@@ -1,7 +1,0 @@
-[Unit]
-Description=Sync HVAC sewer dashboard data from the Raspberry Pi
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 /root/scripts/sync_hvac_data.py
