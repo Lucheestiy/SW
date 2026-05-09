@@ -1,10 +1,12 @@
 /* Sewer Watch dashboard.
-   Loads /data/dashboard.json + /data/sync.json + /data/backup.json
-   from the SW data sync job
+   Loads the small dashboard summary first, then the raw 24h trace lazily
+   from the SW data sync job,
    and renders into the editorial layout, with light/dark theming
    and a scrollable history viewer over the available point series. */
 
-const dashboardUrl = "data/dashboard.json";
+const dashboardSummaryUrl = "data/dashboard-summary.json";
+const dashboardFallbackUrl = "data/dashboard.json";
+const pressure24hFallbackUrl = "data/pressure-24h.json";
 const syncUrl = "data/sync.json";
 const backupUrl = "data/backup.json";
 
@@ -48,6 +50,9 @@ function getPalette() {
 let PALETTE = null;
 const charts = {};
 let loadInFlight = false;
+let historyLoadInFlight = false;
+let lastDeferredHistoryKey = null;
+let lastDeferredHistoryFailedKey = null;
 let lastPayload = null;
 let lastSync = null;
 let lastBackup = null;
@@ -124,6 +129,43 @@ function formatBytes(value) {
     size /= 1024; idx += 1;
   }
   return `${size.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function payloadDataKey(payload) {
+  if (!payload) return "";
+  return `${payload.generated_at || ""}|${payload.synced_at || ""}`;
+}
+
+function hasRawPressure24h(payload) {
+  return Array.isArray(payload?.history?.pressure_24h) && payload.history.pressure_24h.length > 0;
+}
+
+function needsDeferredPressure24h(payload) {
+  return !hasRawPressure24h(payload) || payload?.history?.pressure_24h_carried_forward === true;
+}
+
+function deferredPressure24hUrl(payload) {
+  const splitUrl = payload?.split_files?.pressure_24h;
+  return typeof splitUrl === "string" && splitUrl ? splitUrl : pressure24hFallbackUrl;
+}
+
+function mergePressure24h(payload, points) {
+  if (!payload || !Array.isArray(points)) return payload;
+  payload.history = payload.history || {};
+  payload.history.pressure_24h = points;
+  payload.history.pressure_24h_loaded_at = new Date().toISOString();
+  delete payload.history.pressure_24h_carried_forward;
+  delete payload.history.pressure_24h_carried_from;
+  return payload;
+}
+
+function carryForwardPressure24h(payload) {
+  if (!payload || hasRawPressure24h(payload) || !hasRawPressure24h(lastPayload)) return payload;
+  payload.history = payload.history || {};
+  payload.history.pressure_24h = lastPayload.history.pressure_24h;
+  payload.history.pressure_24h_carried_forward = true;
+  payload.history.pressure_24h_carried_from = payloadDataKey(lastPayload);
+  return payload;
 }
 
 function formatTimestamp(value, fmt = fmtDateTime) {
@@ -314,6 +356,27 @@ function timeMs(value) {
   if (!value) return null;
   const t = new Date(value).getTime();
   return Number.isFinite(t) ? t : null;
+}
+
+function medianSampleIntervalMs(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const intervals = [];
+  let prev = null;
+  for (const point of points) {
+    const t = timeMs(point?.timestamp);
+    if (!Number.isFinite(t)) continue;
+    if (prev !== null && t > prev) intervals.push(t - prev);
+    prev = t;
+  }
+  if (!intervals.length) return null;
+  intervals.sort((a, b) => a - b);
+  return intervals[Math.floor(intervals.length / 2)];
+}
+
+function isBucketedPressureWindow(range, points) {
+  if (!range || range.id !== "24h") return false;
+  const interval = medianSampleIntervalMs(points);
+  return interval !== null && interval >= 5 * 60 * 1000;
 }
 
 function flushWindow(flush) {
@@ -1105,8 +1168,20 @@ function renderPressureWindowChart(id, points, limits, maxTicks, mode = "pulse",
   }
 }
 
+function pickCurrentChartPoints(payload) {
+  const history = payload?.history || {};
+  const sources = [
+    history.pressure_24h,
+    history.pressure_6h,
+    history.pressure_1h,
+    history.pressure_15m,
+    history.pressure_history_7d,
+  ];
+  return sources.find((points) => Array.isArray(points) && points.length) || [];
+}
+
 function renderCurrentChart(payload) {
-  const points = payload?.history?.pressure_24h || [];
+  const points = pickCurrentChartPoints(payload);
   const limits = payload?.limits || {};
   const domain = computeCurrentDomain(points, limits);
   const labels = points.map((p) => formatTimestamp(p.timestamp, fmtTime));
@@ -2156,7 +2231,12 @@ function renderHistoryViewer(payload) {
 
   updateWindowControls(payload, range);
 
-  setText("historyDensity", `${range.label} · ${range.density}`);
+  const deferredPreview = range.id === "24h" && needsDeferredPressure24h(payload);
+  const bucketedWindow = isBucketedPressureWindow(range, points);
+  const densityLabel = deferredPreview
+    ? "Quick preview"
+    : (bucketedWindow ? "15-min peak buckets" : range.density);
+  setText("historyDensity", `${range.label} · ${densityLabel}`);
   setText("historySpan", spanLabel(range, points));
   setText("historyExtreme", extremeLabel(range, points));
   renderPressureLegend(payload, range);
@@ -2199,7 +2279,11 @@ function renderHistoryViewer(payload) {
   }
 
   if (range.kind === "line") {
-    renderHistoryLineChart(points, limits, range, flushes);
+    if (bucketedWindow) {
+      renderHistoryBucketChart(points, limits, range);
+    } else {
+      renderHistoryLineChart(points, limits, range, flushes);
+    }
   } else {
     renderHistoryBarChart(points, range);
   }
@@ -2292,6 +2376,7 @@ function renderHistoryWrapChart(points, limits, range) {
   ctx.clearRect(0, 0, cssWidth, height);
 
   const domain = computePressureDomain(points, limits, range.scale);
+  const bucketed = isBucketedPressureWindow(range, points);
   const minYValue = domain.min;
   const maxYValue = domain.max;
   const valueSpan = Math.max(0.001, maxYValue - minYValue);
@@ -2384,37 +2469,94 @@ function renderHistoryWrapChart(points, limits, range) {
 
     ctx.save();
     ctx.strokeStyle = PALETTE.pressure;
+    ctx.fillStyle = PALETTE.pressure;
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    let started = false;
-    let prevT = null;
-    const gapLimit = range.id === "24h"
-      ? 20 * 60 * 1000
-      : (range.id === "1h" ? 3 * 60 * 1000 : 20 * 1000);
-    for (const sample of laneSamples) {
-      const x = xFor(sample.t);
-      const y = yFor(sample.p);
-      if (!started || (prevT !== null && sample.t - prevT > gapLimit)) {
-        ctx.moveTo(x, y);
-        started = true;
-      } else {
-        ctx.lineTo(x, y);
+    if (bucketed) {
+      const barW = cssWidth < 520 ? 2 : 3;
+      for (const sample of laneSamples) {
+        if (!(sample.p > 0.001)) continue;
+        const x = xFor(sample.t);
+        const y = yFor(sample.p);
+        const leftPx = Math.round(x - barW / 2);
+        const topPx = Math.round(y);
+        const bottomPx = Math.round(plotBottom);
+        ctx.fillRect(leftPx, topPx, barW, Math.max(1, bottomPx - topPx));
       }
-      prevT = sample.t;
-    }
-    ctx.stroke();
+    } else {
+      ctx.beginPath();
+      let started = false;
+      let prevT = null;
+      const gapLimit = range.id === "24h"
+        ? 20 * 60 * 1000
+        : (range.id === "1h" ? 3 * 60 * 1000 : 20 * 1000);
+      for (const sample of laneSamples) {
+        const x = xFor(sample.t);
+        const y = yFor(sample.p);
+        if (!started || (prevT !== null && sample.t - prevT > gapLimit)) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+        prevT = sample.t;
+      }
+      ctx.stroke();
 
-    ctx.globalAlpha = 0.72;
-    ctx.beginPath();
-    for (const [col, ext] of columns) {
-      if (Math.abs(ext.max - ext.min) < 0.002) continue;
-      const x = col + 0.5;
-      ctx.moveTo(x, yFor(ext.min));
-      ctx.lineTo(x, yFor(ext.max));
+      ctx.globalAlpha = 0.72;
+      ctx.beginPath();
+      for (const [col, ext] of columns) {
+        if (Math.abs(ext.max - ext.min) < 0.002) continue;
+        const x = col + 0.5;
+        ctx.moveTo(x, yFor(ext.min));
+        ctx.lineTo(x, yFor(ext.max));
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
     ctx.restore();
   }
+}
+
+function renderHistoryBucketChart(points, limits, range) {
+  const labels = points.map((p) => formatTimestamp(p.timestamp, fmtTime));
+  const domain = computePressureDomain(points, limits, range.scale);
+  const visible = domain.max;
+  const values = points.map((p) => asNumber(p.pressure_inh2o));
+  createChart("historyChart", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "15-min peak",
+          data: values,
+          backgroundColor: PALETTE.pressure,
+          borderColor: PALETTE.pressure,
+          borderWidth: 1,
+          borderSkipped: false,
+          barPercentage: 0.32,
+          categoryPercentage: 0.8,
+          maxBarThickness: 4,
+        },
+        ...buildPressureLimitDatasets(labels, limits, visible),
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: baseInteraction(),
+      plugins: {
+        legend: baseLegend(),
+        tooltip: baseTooltip("inH2O"),
+        sewerBands: { bands: buildPressureBands(limits, visible) },
+      },
+      scales: baseScales("Pressure (inH₂O)", domain.min, visible, 10, (v) => {
+        const n = asNumber(v);
+        if (n === null) return v;
+        return n >= 1 ? n.toFixed(2) : n.toFixed(3);
+      }),
+    },
+  });
 }
 
 function renderHistoryLineChart(points, limits, range, flushes = []) {
@@ -2709,7 +2851,6 @@ function bindResizeRefresh() {
 
 function renderAll(payload, sync, backup) {
   if (!PALETTE) PALETTE = getPalette();
-  const flushes = pickAllFlushes(payload);
 
   renderVerdict(payload, sync);
   renderFreshness(payload, sync);
@@ -2729,16 +2870,83 @@ function renderAll(payload, sync, backup) {
   renderHistoryViewer(payload);
 }
 
+async function fetchJson(url, cache) {
+  const res = await fetch(`${url}?${cache}`);
+  return {
+    ok: res.ok,
+    status: res.status,
+    json: res.ok ? await res.json() : null,
+  };
+}
+
+async function loadDashboardPayload(cache) {
+  const summary = await fetchJson(dashboardSummaryUrl, cache);
+  if (summary.ok) return summary.json;
+
+  if (summary.status && summary.status !== 404) {
+    console.warn(`dashboard summary fetch failed: ${summary.status}; falling back to full dashboard`);
+  }
+
+  const full = await fetchJson(dashboardFallbackUrl, cache);
+  if (!full.ok) throw new Error(`dashboard fetch failed: ${full.status}`);
+  return full.json;
+}
+
+async function loadDeferredPressure24h(expectedKey) {
+  if (historyLoadInFlight) return;
+  const target = lastPayload;
+  if (!target || !needsDeferredPressure24h(target) || payloadDataKey(target) !== expectedKey) return;
+  if (lastDeferredHistoryKey === expectedKey || lastDeferredHistoryFailedKey === expectedKey) return;
+
+  const url = deferredPressure24hUrl(target);
+  if (!url) return;
+
+  historyLoadInFlight = true;
+  try {
+    const cache = `ts=${Date.now()}`;
+    const res = await fetchJson(url, cache);
+    if (!res.ok) throw new Error(`pressure 24h fetch failed: ${res.status}`);
+    const points = Array.isArray(res.json?.pressure_24h)
+      ? res.json.pressure_24h
+      : (Array.isArray(res.json?.history?.pressure_24h) ? res.json.history.pressure_24h : []);
+    if (!points.length) throw new Error("pressure 24h payload did not contain points");
+
+    const current = lastPayload;
+    if (!current || payloadDataKey(current) !== expectedKey) return;
+    mergePressure24h(current, points);
+    lastDeferredHistoryKey = expectedKey;
+    lastDeferredHistoryFailedKey = null;
+    renderCurrentChart(current);
+    renderHistoryViewer(current);
+  } catch (error) {
+    lastDeferredHistoryFailedKey = expectedKey;
+    console.warn(error);
+  } finally {
+    historyLoadInFlight = false;
+  }
+}
+
+function scheduleDeferredHistoryLoad(payload) {
+  if (!payload || !needsDeferredPressure24h(payload)) return;
+  const key = payloadDataKey(payload);
+  if (!key || lastDeferredHistoryKey === key || lastDeferredHistoryFailedKey === key) return;
+  const load = () => loadDeferredPressure24h(key);
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback(load, { timeout: 1800 });
+  } else {
+    window.setTimeout(load, 0);
+  }
+}
+
 async function loadData() {
   const cache = `ts=${Date.now()}`;
-  const [d, s, b] = await Promise.all([
-    fetch(`${dashboardUrl}?${cache}`),
+  const [payload, s, b] = await Promise.all([
+    loadDashboardPayload(cache),
     fetch(`${syncUrl}?${cache}`),
     fetch(`${backupUrl}?${cache}`),
   ]);
-  if (!d.ok) throw new Error(`dashboard fetch failed: ${d.status}`);
   return {
-    payload: await d.json(),
+    payload: carryForwardPressure24h(payload),
     sync: s.ok ? await s.json() : {},
     backup: b.ok ? await b.json() : {},
   };
@@ -2753,6 +2961,7 @@ async function tick() {
     lastSync = sync;
     lastBackup = backup;
     renderAll(payload, sync, backup);
+    scheduleDeferredHistoryLoad(payload);
   } catch (error) {
     console.error(error);
     const verdict = byId("verdictBlock");
